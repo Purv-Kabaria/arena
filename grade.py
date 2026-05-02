@@ -1,35 +1,25 @@
-#!/usr/bin/env python
-"""Scoring harness — mirrors Gobblecube's grader.
-
-Two modes:
-
-  Local dev grading (from repository root):
-      python grade.py
-          Reads data/dev.parquet, prints MAE on stdout.
-
-  Grader mode (used inside the Docker container by Gobblecube):
-      python grade.py <input_parquet> <output_csv>
-          Reads requests from input_parquet (duration_seconds not required),
-          writes one prediction per row to output_csv.
-          Gobblecube computes MAE server-side against held-out truth.
-"""
-
 from __future__ import annotations
 
+import argparse
+import importlib
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from predict import predict
-
 REPO_ROOT = Path(__file__).resolve().parent
 DATA_DIR = REPO_ROOT / "data"
 REQUEST_FIELDS = ["pickup_zone", "dropoff_zone", "requested_at", "passenger_count"]
 
 
-def run(input_path: Path, output_path: Path | None, sample_n: int | None = None) -> None:
+def run(
+    predict_fn,
+    input_path: Path,
+    output_csv: Path | None,
+    sample_n: int | None,
+) -> None:
     df = pd.read_parquet(input_path)
     if sample_n is not None and len(df) > sample_n:
         df = df.sample(n=sample_n, random_state=42).reset_index(drop=True)
@@ -38,24 +28,23 @@ def run(input_path: Path, output_path: Path | None, sample_n: int | None = None)
     preds = np.empty(len(df), dtype=np.float64)
     records = df[REQUEST_FIELDS].to_dict("records")
     for i, req in enumerate(records):
-        preds[i] = predict(req)
+        preds[i] = predict_fn(req)
 
-    if output_path is not None:
-        # Echo the input's row_idx so the grader can verify row order on
-        # eval. Local Dev parquet has no row_idx — synthesize one from the
-        # current row position.
+    if output_csv is not None:
         if "row_idx" in df.columns:
             row_idx = df["row_idx"].to_numpy()
         else:
             row_idx = np.arange(len(df), dtype=np.int64)
-        pd.DataFrame({"row_idx": row_idx, "prediction": preds}).to_csv(output_path, index=False)
-        print(f"Wrote {len(preds):,} predictions to {output_path}", file=sys.stderr)
-        return
+        pd.DataFrame({"row_idx": row_idx, "prediction": preds}).to_csv(output_csv, index=False)
+        print(f"Wrote {len(preds):,} predictions to {output_csv}", file=sys.stderr)
 
     if "duration_seconds" not in df.columns:
-        raise SystemExit(
-            "Local grading needs a `duration_seconds` column in the parquet."
-        )
+        if output_csv is None:
+            raise SystemExit(
+                "Local grading needs a `duration_seconds` column in the parquet."
+            )
+        return
+
     truth = df["duration_seconds"].to_numpy()
     mae = float(np.mean(np.abs(preds - truth)))
     if not np.isfinite(mae):
@@ -63,23 +52,64 @@ def run(input_path: Path, output_path: Path | None, sample_n: int | None = None)
     print(f"MAE: {mae:.1f} seconds")
 
 
-def main(argv: list[str]) -> None:
-    if len(argv) == 1:
-        # Local: sample 50k rows of Dev for fast feedback. Deterministic seed
-        # so the printed MAE is stable across runs. Matches Eval set size.
-        run(DATA_DIR / "dev.parquet", None, sample_n=50_000)
-    elif len(argv) == 4:
-        # Grader mode: no sampling, predict every row in the input parquet.
-        run(Path(argv[1]), Path(argv[2]), sample_n=int(argv[3]))
-    else:
-        print(
-            "Usage:\n"
-            "  python grade.py                              # local Dev grading (50k sample)\n"
-            "  python grade.py <input.parquet> <output.csv> <sample_n>  # grader mode (no sampling)",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="ETA challenge scoring harness")
+    parser.add_argument(
+        "input_parquet",
+        nargs="?",
+        help="Input parquet (with output_csv for grader / Docker mode)",
+    )
+    parser.add_argument(
+        "output_csv",
+        nargs="?",
+        help="Predictions CSV (grader / Docker mode)",
+    )
+    parser.add_argument(
+        "--model",
+        "-m",
+        default=None,
+        help="Model artifact path (repo-relative or absolute); sets ETA_MODEL_PATH",
+    )
+    parser.add_argument(
+        "--sample",
+        "--train-size",
+        dest="sample_n",
+        type=int,
+        default=50_000,
+        help="Local dev: max rows from dev.parquet (default 50000; 0 = all rows)",
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Local dev: also write predictions CSV to this path",
+    )
+    args = parser.parse_args()
+
+    if args.model is not None:
+        mp = Path(args.model)
+        resolved = mp.resolve() if mp.is_absolute() else (REPO_ROOT / mp).resolve()
+        os.environ["ETA_MODEL_PATH"] = str(resolved)
+        print(f"Using model: {resolved}", file=sys.stderr)
+
+    import predict as predict_mod
+
+    importlib.reload(predict_mod)
+    predict_fn = predict_mod.predict
+
+    has_in = args.input_parquet is not None
+    has_out = args.output_csv is not None
+    if has_in ^ has_out:
+        parser.error("Provide both input_parquet and output_csv, or neither for local dev.")
+
+    if has_in and has_out:
+        run(predict_fn, Path(args.input_parquet), Path(args.output_csv), None)
+        return
+
+    sample_n = None if args.sample_n <= 0 else args.sample_n
+    local_csv = Path(args.output) if args.output else None
+    run(predict_fn, DATA_DIR / "dev.parquet", local_csv, sample_n)
 
 
 if __name__ == "__main__":
-    main(sys.argv)
+    main()
