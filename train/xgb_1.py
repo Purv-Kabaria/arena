@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """
 Highly Optimized XGBoost Training Script (xgb_1).
 Features:

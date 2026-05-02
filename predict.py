@@ -201,6 +201,48 @@ def _build_xgb_1_predict_fn(artifact: dict) -> Callable[[dict], float]:
     return _one
 
 
+def _build_xgb_2_predict_fn(artifact: dict) -> Callable[[dict], float]:
+    import pandas as pd
+    from train.xgb_2 import add_spatial_features, add_temporal_base, apply_encodings
+
+    model = artifact["model"]
+    zone_centers = artifact["zone_centers"]
+    raw_traffic = artifact["traffic_agg"]
+    traffic_agg = {(int(k[0]), int(k[1])): int(v) for k, v in raw_traffic.items()}
+    hubs = artifact["hubs"]
+    holidays_set = set(artifact["holidays"])
+    airport_zones = set(artifact["airport_zones"])
+    features = artifact["features"]
+    full_stats = (
+        artifact["route_stats"],
+        artifact["rh_stats"],
+        artifact["pu_stats"],
+        artifact["do_stats"],
+        artifact["global_mean"],
+    )
+
+    def _one(request: dict) -> float:
+        df = pd.DataFrame([{
+            "pickup_zone": int(request["pickup_zone"]),
+            "dropoff_zone": int(request["dropoff_zone"]),
+            "requested_at": request["requested_at"],
+            "passenger_count": int(request["passenger_count"]),
+        }])
+        df = add_temporal_base(df, holidays_set, airport_zones)
+        df["traffic_density"] = [
+            traffic_agg.get((int(d), int(h)), 0) for d, h in zip(df["dow"], df["hour"])
+        ]
+        df["traffic_density"] = df["traffic_density"].astype("float32")
+        df = add_spatial_features(df, zone_centers, hubs)
+        df["route_key"] = df["pickup_zone"].astype(str) + "_" + df["dropoff_zone"].astype(str)
+        df["route_hour_key"] = df["route_key"] + "_" + df["hour"].astype(str)
+        df = apply_encodings(df, full_stats)
+        pred_log = model.predict(df[features])
+        return float(np.expm1(np.asarray(pred_log, dtype=np.float64).ravel()[0]))
+
+    return _one
+
+
 def _load_predict_fn() -> Callable[[dict], float]:
     path = _resolved_model_path()
     with open(path, "rb") as f:
@@ -213,6 +255,8 @@ def _load_predict_fn() -> Callable[[dict], float]:
         return _build_dt_2_predict_fn(obj)
     if isinstance(obj, dict) and obj.get("model_type") == "xgb_1":
         return _build_xgb_1_predict_fn(obj)
+    if isinstance(obj, dict) and obj.get("model_type") == "xgb_2":
+        return _build_xgb_2_predict_fn(obj)
     model = obj
     if hasattr(model, "get_booster"):
         model.get_booster().feature_names = None

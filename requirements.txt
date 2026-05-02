@@ -6,5 +6,6 @@ xgboost>=2.0,<4
 torch>=2.0,<3
 geopandas>=0.14,<1
 requests>=2.28,<3
+optuna>=3.0,<4
 tqdm>=4.66,<5
 pytest>=7.4,<10
