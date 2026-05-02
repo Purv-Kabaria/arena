@@ -82,12 +82,52 @@ def _build_dcn_predict_fn(artifact: dict) -> Callable[[dict], float]:
     return _one
 
 
+def _build_dt_1_predict_fn(artifact: dict) -> Callable[[dict], float]:
+    import pandas as pd
+    from train.dt_1 import add_spatial_features, add_weather_features, apply_target_encodings
+
+    model = artifact["model"]
+    zone_centers = artifact["zone_centers"]
+    zone_clusters = artifact["zone_clusters"]
+    weather_dict = artifact["weather_dict"]
+    weather_avgs = artifact["weather_avgs"]
+    route_stats = artifact["route_stats"]
+    c_route_stats = artifact["c_route_stats"]
+    global_mean = artifact["global_mean"]
+    features = artifact["features"]
+
+    def _one(request: dict) -> float:
+        df = pd.DataFrame([{
+            "pickup_zone": int(request["pickup_zone"]),
+            "dropoff_zone": int(request["dropoff_zone"]),
+            "requested_at": request["requested_at"],
+            "passenger_count": int(request["passenger_count"]),
+        }])
+        ts = pd.to_datetime(df["requested_at"])
+        df["hour"] = ts.dt.hour.astype("int8")
+        df["minute"] = ts.dt.minute.astype("int8")
+        df["dow"] = ts.dt.dayofweek.astype("int8")
+        df["month"] = ts.dt.month.astype("int8")
+        df["is_weekend"] = (df["dow"] >= 5).astype("int8")
+        df["passenger_count"] = df["passenger_count"].astype("float32")
+        df = add_weather_features(df, weather_dict, weather_avgs)
+        df = add_spatial_features(df, zone_centers, zone_clusters)
+        df = apply_target_encodings(df, route_stats, c_route_stats, global_mean)
+        x = df[features]
+        pred_log = model.predict(x)
+        return float(np.expm1(np.asarray(pred_log, dtype=np.float64).ravel()[0]))
+
+    return _one
+
+
 def _load_predict_fn() -> Callable[[dict], float]:
     path = _resolved_model_path()
     with open(path, "rb") as f:
         obj = pickle.load(f)
     if isinstance(obj, dict) and obj.get("model_type") == "dcn":
         return _build_dcn_predict_fn(obj)
+    if isinstance(obj, dict) and obj.get("model_type") == "dt_1":
+        return _build_dt_1_predict_fn(obj)
     model = obj
     if hasattr(model, "get_booster"):
         model.get_booster().feature_names = None

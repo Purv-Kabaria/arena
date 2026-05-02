@@ -10,13 +10,14 @@ Features:
 Run: python train/dcn_1.py
 """
 
-import os
+import argparse
 import io
-import zipfile
 import pickle
 import time
-import requests
+import zipfile
 from pathlib import Path
+
+import requests
 
 import numpy as np
 import pandas as pd
@@ -33,7 +34,6 @@ MODELS_DIR = ROOT_DIR / "models"
 MODEL_PATH = MODELS_DIR / "dcn_1.pkl"
 MODELS_DIR.mkdir(exist_ok=True)
 
-# --- 1. GEOSPATIAL PROCESSING ---
 def get_zone_centroids() -> dict:
     """Downloads NYC Taxi Zones shapefile and computes lat/lon centroids."""
     print("Downloading and processing NYC Taxi Zones shapefile...")
@@ -165,8 +165,16 @@ class DCN(nn.Module):
         out = torch.cat([cross_out, deep_out], dim=1)
         return self.output_layer(out)
 
-# --- 4. TRAINING LOOP ---
 def main():
+    parser = argparse.ArgumentParser(description="Train DCN ETA model (dcn_1)")
+    parser.add_argument(
+        "--train-size",
+        type=int,
+        default=3_000_000,
+        help="Max training rows after filtering (default 3_000_000; 0 = use all)",
+    )
+    args = parser.parse_args()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}")
     
@@ -180,9 +188,9 @@ def main():
     valid_duration = (train["duration_seconds"] >= 60) & (train["duration_seconds"] <= 7200)
     train = train[valid_duration].copy()
     
-    # To keep training time reasonable on CPU, sample 3M rows for training
-    if len(train) > 3_000_000:
-        train = train.sample(n=3_000_000, random_state=42)
+    cap = args.train_size
+    if cap > 0 and len(train) > cap:
+        train = train.sample(n=cap, random_state=42)
         
     print("Extracting features...")
     train = extract_features(train, zone_centers)
@@ -208,8 +216,7 @@ def main():
     
     # DataLoaders
     batch_size = 4096
-    train_loader = DataLoader(TensorDataset(torch.tensor(train_cat), torch.tensor(train_dense), torch.tensor(train_y)), 
-                              batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(TensorDataset(torch.tensor(train_cat), torch.tensor(train_dense), torch.tensor(train_y)), batch_size=batch_size, shuffle=True)
     dev_loader = DataLoader(TensorDataset(torch.tensor(dev_cat), torch.tensor(dev_dense), torch.tensor(dev_y)), 
                             batch_size=batch_size)
     
