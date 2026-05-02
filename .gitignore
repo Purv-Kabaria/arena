@@ -9,6 +9,10 @@ data/raw/
 data/train.parquet
 data/dev.parquet
 data/sample_1M.parquet
+data/holidays.json
+data/hubs.json
+data/taxi_zone_lookup.csv
+data/taxi_zones/
 
 # Docker cache
 .docker_cache/
