@@ -24,7 +24,7 @@ def _resolved_model_path() -> Path:
     if env:
         p = Path(env)
         return p.resolve() if p.is_absolute() else (REPO_ROOT / p).resolve()
-    return (REPO_ROOT / "models" / "baseline.pkl").resolve()
+    return (REPO_ROOT / "model.pkl").resolve()
 
 
 def _predict_xgb(model: Any, request: dict) -> float:
@@ -203,7 +203,7 @@ def _build_xgb_1_predict_fn(artifact: dict) -> Callable[[dict], float]:
 
 def _build_xgb_2_predict_fn(artifact: dict) -> Callable[[dict], float]:
     import pandas as pd
-    from train.xgb_2 import add_spatial_features, add_temporal_base, apply_encodings
+    from train import add_spatial_features, add_temporal_base, apply_encodings
 
     model = artifact["model"]
     zone_centers = artifact["zone_centers"]

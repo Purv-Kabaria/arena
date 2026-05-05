@@ -1,30 +1,31 @@
-# Reference Dockerfile for the ETA Challenge.
-# Target total image size: ≤ 2.5 GB. This baseline builds to ~2.02 GB
-# (xgboost pulls scipy + nvidia-nccl-cu12; trim those if you need headroom).
-#
-# Build:
-#   docker build -t my-eta .
-# Test the grader pathway:
-#   docker run --rm -v $(pwd)/data:/work my-eta /work/dev.parquet /work/preds.csv
+# Optimized Dockerfile for the ETA Challenge
+# Target total image size: ≤ 2.5 GB.
+# This image supports training, testing, and grading.
 
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# libgomp1 is required for xgboost at runtime on slim images
+# Install system dependencies
+# libgomp1: required for XGBoost at runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy requirements and install dependencies
+# We install the CPU version of torch to keep the image size well under the 2.5GB limit.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Submission surface: predict.py + grade.py + trained weights. We do NOT
-# unpickle weights at build time — that runs untrusted candidate code on
-# the grader host before any sandbox applies. The first docker-run invocation
-# is the smoke test; it runs inside the sandboxed grader container.
-COPY predict.py grade.py ./
-COPY models/baseline.pkl ./models/baseline.pkl
+# Copy core logic and model
+# Using the new root-level structure
+COPY predict.py grade.py train.py model.pkl ./
+COPY tests/ ./tests/
 
-# Grader invokes:  python grade.py <input.parquet> <output.csv>
-ENTRYPOINT ["python", "grade.py"]
+# Default entrypoint is for grading (as required by the submission spec)
+# To run training: docker run --rm -v $(pwd)/data:/app/data <image_name> train.py
+# To run tests:    docker run --rm <image_name> -m pytest tests/
+ENTRYPOINT ["python"]
+CMD ["grade.py"]
